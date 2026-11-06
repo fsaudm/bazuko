@@ -7,6 +7,8 @@ import { PoliceSirenAudio } from './PoliceSirenAudio.js';
 export const MIX_CATEGORIES = ['ambient', 'traffic', 'voices', 'effects'];
 // El audio vive en public/audio: la ruta se arma con la base para que la demo de Pages funcione bajo su subcamino.
 const AUDIO_BASE = `${import.meta.env?.BASE_URL ?? '/'}audio/`;
+// Golpes grabados a un carro: cada puño o patada a un vehículo suena uno al azar.
+const CAR_HITS = ['golpe_carro_1.mp3', 'golpe_carro_2.mp3', 'golpe_carro_3.mp3', 'golpe_carro_4.mp3'];
 // Mientras suena una frase, tráfico y ambiente bajan a esta fracción para que se entienda.
 // Más lejos de esto un grito de susto ya no se oye.
 const YELP_RANGE = 35;
@@ -64,6 +66,7 @@ export class AudioSystem {
       full: sound('full.wav', { volume: .5 }),
       empty: sound('empty.wav', { volume: .4 }),
       carAlarm: sound('Sonido De Alarma De Auto.opus', { volume: .6, loop: false, pool: 6 }),
+      ...Object.fromEntries(CAR_HITS.map((file, i) => [`carHit${i + 1}`, sound(file, { volume: .8, pool: 3 })])),
       steps: sound('Sounds_of_a_steps.opus', { volume: .65, sprite: STEP_SPRITES, pool: 6 }),
       ambient: sound('city_atmosphere_soun.opus', { volume: .18, loop: true }),
       rain: sound('rain_sound_01.mp3', { volume: .45, loop: true })
@@ -256,6 +259,8 @@ export class AudioSystem {
     if (!fx) return;
     const volume = this._knockVolume(position);
     if (volume <= 0) return;
+    // A un carro o una moto le suena uno de los golpes grabados; mientras cargan, o en lo demás, el sintetizado.
+    if (metal && this._playCarHit(volume)) return;
     try {
       const { ctx, out } = fx;
       const t = ctx.currentTime;
@@ -278,12 +283,22 @@ export class AudioSystem {
     } catch {}
   }
 
+  /** Uno de los cuatro golpes grabados a un carro, al azar; false si ninguno ha cargado, y suena el sintetizado. */
+  _playCarHit(volume) {
+    const ready = CAR_HITS.map((_, i) => this.sounds[`carHit${i + 1}`]).filter(hit => hit?.state() === 'loaded');
+    if (!ready.length) return false;
+    const hit = ready[Math.floor(Math.random() * ready.length)];
+    const id = hit.play();
+    hit.volume(Math.min(1, volume * 2.4), id);
+    hit.rate(.94 + Math.random() * .12, id);
+    return true;
+  }
+
   _knockVolume(position) {
-    const level = this._level('effects');
     const listener = this._listenerPosition;
-    if (!position || !listener) return .3 * level;
+    if (!position || !listener) return .3;
     const distance = Math.hypot(position.x - listener.x, position.y - listener.y, position.z - listener.z);
-    return .35 * level * Math.max(0, Math.min(1, (8 - distance) / 7));
+    return .35 * Math.max(0, Math.min(1, (8 - distance) / 7));
   }
 
   stop(name) {
