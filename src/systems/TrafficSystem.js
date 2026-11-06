@@ -1504,7 +1504,7 @@ export class TrafficSystem {
       }
       remaining -= stepTime;
     }
-    this._motoFleet?.sync(this.vehicles);
+    this._motoFleet?.sync(this.vehicles, camera?.position);
     this._carFleet ??= new CarFleet(this.scene);
     this._carFleet.sync(this.vehicles);
     if (caught && !this._arrestDispatched) {
