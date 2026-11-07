@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { Car } from '../entities/Car.js';
 import { Moto } from '../entities/Moto.js';
 import { CarFleet } from '../world/bogota/vehicles.js';
+import { BusPassengers } from './BusPassengers.js';
 import { MOTO_LATERAL, MotoFleet, motoLoad } from '../world/bogota/motos.js';
 import { signalState } from '../world/bogota/TrafficSignals.js';
 import {
@@ -104,6 +105,8 @@ function brakeEngaged(before, after, dt) {
 export class TrafficSystem {
   constructor(scene, routes, { carsPerRoute = 4, policeCount = 0, random = Math.random } = {}) {
     this.vehicles = [];
+    this.people = null;   // PeoplePool que presta gente a las busetas (lo pone el juego)
+    this.extraMotos = []; // motos que lleva otro sistema (robo express): el lote las dibuja junto a las del tráfico
     this.wantedLevel = 0; // lo mantiene StealSystem: el nivel de «te tienen fichado»
     this.scene = scene;
     // Sin nivel la flota no cambia de tamaño: el reloj y la densidad los pone el juego, no las pruebas.
@@ -1534,9 +1537,13 @@ export class TrafficSystem {
       }
       remaining -= stepTime;
     }
-    this._motoFleet?.sync(this.vehicles, camera?.position);
+    this._motoFleet?.sync(this.extraMotos.length ? this.vehicles.concat(this.extraMotos) : this.vehicles, camera?.position);
     this._carFleet ??= new CarFleet(this.scene);
     this._carFleet.sync(this.vehicles);
+    if (this.people) {
+      this._busPassengers ??= new BusPassengers(this.scene, this.people);
+      this._busPassengers.sync(this.vehicles, camera?.position, hour, performance.now() / 1000, dt);
+    }
     if (caught && !this._arrestDispatched) {
       this._arrestDispatched = true;
       emit('police-arrest', { reason: 'chase' });
@@ -1551,5 +1558,7 @@ export class TrafficSystem {
     this._motoFleet = null;
     this._carFleet?.dispose();
     this._carFleet = null;
+    this._busPassengers?.dispose();
+    this._busPassengers = null;
   }
 }
