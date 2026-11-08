@@ -12,6 +12,7 @@ import { Dog, DOG_DEFAULT_LOOK, legacyPetLook } from '../entities/Dog.js';
 import { CompanionNavigation } from '../systems/CompanionNavigation.js';
 import { Minimap, nombreALaVista } from '../ui/Minimap.js';
 import { ZonaAviso } from '../ui/ZonaAviso.js';
+import { ParoAviso } from '../ui/ParoAviso.js';
 import { alternarPantallaCompleta } from './PantallaCompleta.js';
 import { mojarCarton } from '../ui/mojado.js';
 import { servicePlaces, needContext, SHOP_PRICES, SHOP_OFFERS } from '../ui/mapServices.js';
@@ -81,6 +82,9 @@ import { WaterEffects } from '../systems/WaterEffects.js';
 import { BusExhaust } from '../systems/BusExhaust.js';
 import { StationCrowd } from '../systems/StationCrowd.js';
 import { PeoplePool, POOL_SIZE } from '../systems/PeoplePool.js';
+import { RealRiders } from '../world/bogota/realRiders.js';
+import { ProtestSystem, PROTEST } from '../systems/ProtestSystem.js';
+import { riotCopFigure } from '../entities/RiotCop.js';
 import { ArticulatedPassengers } from '../systems/ArticulatedPassengers.js';
 import { LocalLights } from './LocalLights.js';
 import { ContactShadows } from './ContactShadows.js';
@@ -96,6 +100,7 @@ import { DEFAULT_LOOK, normalizeLook } from '../character/look.js';
 import { streetWetness } from '../character/streetMaterials.js';
 import { ITEMS, COSTAL_BONUS, isForSale } from '../data/items.js';
 import { SLEEP } from '../data/cambuche.js';
+import { CalleSystem, cartonSleepOutcome, CARTON_SLEEP } from '../features/calle.js';
 import { cop } from '../utils/money.js';
 import { makeParkedMotos, MOTO_SIZE } from '../world/bogota/motos.js';
 
@@ -146,6 +151,14 @@ export class Game {
     this.people = new PeoplePool(this.sceneMgr.scene, { size: globalThis.location?.search?.includes('sinGente') ? 0 : POOL_SIZE });
     this.stationCrowd = new StationCrowd(this.sceneMgr.scene, this.people);
     this.busRiders = new ArticulatedPassengers(this.people);
+    // La gente de las motos más cercanas: personas completas ya sentadas (`?sinMotoReales` las apaga para medir)
+    this.motoPeople = new RealRiders(this.sceneMgr.scene, { copies: globalThis.location?.search?.includes('sinMotoReales') ? { driver: 0, pillion: 0, tank: 0 } : undefined });
+    // Protestas: la multitud sale del mismo grupo de gente y los antimotines de uno propio, chico (`?sinGente` los apaga)
+    this.riotCops = new PeoplePool(this.sceneMgr.scene, { size: globalThis.location?.search?.includes('sinGente') ? 0 : PROTEST.cops, factory: riotCopFigure });
+    this.protesters = new PeoplePool(this.sceneMgr.scene, { size: globalThis.location?.search?.includes('sinGente') ? 0 : PROTEST.protesters });
+    this.protest = new ProtestSystem(this.sceneMgr.scene, { player: this.player, stats: this.stats, people: this.protesters, cops: this.riotCops, audio: this.audio });
+    this.protest.onPlayerHurt = () => { if (this.stats.salud <= 0) this._deathCause = 'golpiza'; };
+    this.protest.onProvoked = () => this.steal?._alertPolice?.();
     this.contactShadows = new ContactShadows(this.sceneMgr.scene);
     this._contactShadowFrame = {
       player: this.player,
@@ -178,12 +191,16 @@ export class Game {
     this.robo = new RoboExpressSystem(this.sceneMgr.scene, { player: this.player, stats: this.stats, inventory: this.inventory, audio: this.audio });
     this.robo.onPlayerHurt = () => { if (this.stats.salud <= 0) this._deathCause = 'golpiza'; };
     this.robo.onShot = () => this.steal?._alertPolice?.();
+    // La calle de los de la calle: ladrillo para raspar, refugio de chamber, bocadillos gigantes y cartón para dormir
+    this.calle = new CalleSystem(this.sceneMgr.scene, { player: this.player, stats: this.stats, inventory: this.inventory, people: this.people, audio: this.audio });
     // Imagen y sonido al consumir pegante, pastilla o hierba
     this.substanceEffects = new SubstanceEffects({ canvas, audio: this.audio });
     // el basuco además trae paranoia: sombras, susurros y mirar a los lados
     window.addEventListener('substance-consumed', (e) => {
       const paranoia = SUBSTANCE_EFFECTS[e.detail?.id]?.paranoia;
       if (paranoia) this.psychosis?.induce(paranoia.seconds, paranoia.severity);
+      // pegante, pastilla, basuco y polvo de ladrillo a veces traen bocadillos gigantes
+      if (['pegante', 'pastilla', 'basuco', 'polvoLadrillo'].includes(e.detail?.id) && Math.random() < .2) this.calle?.summonBocadillos(2);
     });
     // Interacción
     this.interaction = new InteractionSystem(
@@ -207,6 +224,7 @@ export class Game {
     this.menu = new Menu();
     this.minimap = new Minimap();
     this.zonaAviso = new ZonaAviso();
+    this.paroAviso = new ParoAviso();
     this.weather = new WeatherSystem(this.sceneMgr.scene);
     this.hud.weather = this.weather;
     window.addEventListener('weather-lightning', ({ detail }) => this.audio.playThunder?.(detail?.distance));
@@ -347,7 +365,10 @@ export class Game {
       [...(district?.npcs ?? []), ...(this.roadRage?.preloadables ?? []), ...(this.limpieza?.preloadables ?? []), ...(this.robo?.preloadables ?? [])].map(npc => () => npc.preload()),
       importedEntities.map(entity => () => entity.preloadModel()),
       [() => district?.preloadDetails?.()],
-      this.people?.tasks() ?? []
+      this.people?.tasks() ?? [],
+      this.motoPeople?.tasks() ?? [],
+      this.riotCops?.tasks() ?? [],
+      this.protesters?.tasks() ?? []
     ], (done, total) => {
       const text = `Cargando recursos… ${done} de ${total}`;
       // Repintar por presupuesto temporal, no dos fotogramas por cada instancia.
@@ -580,6 +601,7 @@ export class Game {
     distributeShelterLoot(this.pickups);
     // Canecas permanentes en puntos de basura separados de las bolsas y lugares reservados.
     const containerSpots = spawnPositions.filter(point => this.pickups.every(pickup => point.distanceTo(pickup.position) >= 4));
+    this.calle?.setup(district, containerSpots.slice(12), { interaction: this.interaction, avoid: this.cambuche?.position });
     for (const point of containerSpots.slice(0, 12)) {
       const position = point.clone();
       position.y = district.getGroundHeight?.(position.x, position.z) ?? 0;
@@ -651,6 +673,7 @@ export class Game {
     if (district.getTrafficRoutes) {
       this.traffic = new TrafficSystem(this.sceneMgr.scene, district.getTrafficRoutes(), { policeCount: 2 });
       this.traffic.people = this.people;
+      this.traffic.motoPeople = this.motoPeople;
       this.traffic.setDensity(this.trafficDensity);
       // La flota diaria entra y sale con el reloj: el juego le da de alta el carro nuevo y de baja el que se va.
       this.traffic.onVehicleAdded = (car) => {
@@ -730,6 +753,7 @@ export class Game {
     if (this.traffic) this.roadRage?.setup(district, this.traffic, district.trafficPedestrians, { collisions: this.collisions });
     if (this.traffic) this.limpieza?.setup(district, this.traffic.routes, district.trafficPedestrians, { collisions: this.collisions });
     if (this.traffic) this.robo?.setup(district, this.traffic.routes, district.trafficPedestrians, { collisions: this.collisions, extraMotos: this.traffic.extraMotos });
+    if (this.traffic) this.protest?.setup(district, this.traffic.routes, district.trafficPedestrians, { interaction: this.interaction, vehicles: this.traffic });
 
     // ===== Tienda La Esquinita =====
     this.shop = new Shop(
@@ -969,6 +993,42 @@ export class Game {
     }, 1200);
   }
 
+  /** Echarse un rato en un cartón del costal, donde sea: rinde poco (+5 de energía) y trae sus riesgos. */
+  sleepOnCarton() {
+    const free = !this.isSleeping && !this._deathPending && !this._arrestPending && !this.traffic?.inPursuit && !this.limpieza?.active && !this.robo?.active;
+    if (!free) return false;
+    if (this.inventory.count('carton') < 1) {
+      window.dispatchEvent(new CustomEvent('toast', { detail: { text: 'Necesito un cartón en el costal para echarme en la calle.', type: 'info' } }));
+      return false;
+    }
+    this.isSleeping = true;
+    this.substanceEffects?.end();
+    this.psychosis?.clearInduced?.();
+    this.player.stopSmoking?.();
+    this.player.stopBasuco?.();
+    this.player.settleForSleep?.();
+    this.player.playAction('dormir', 1.6);
+    this.calle?.layCarton(this.player.position, this.player.root.rotation.y);
+    const outcome = cartonSleepOutcome({ raining: !!this.weather?.isRaining });
+    const st = this.stats;
+    this.clock.hour += CARTON_SLEEP.hours;
+    while (this.clock.hour >= 24) { this.clock.hour -= 24; this.clock.day += 1; }
+    st.energia = Math.min(100, st.energia + outcome.energia);
+    st.salud = Math.max(0, Math.min(100, st.salud + outcome.salud));
+    if (outcome.ruined) this.inventory.remove('carton', 1);
+    if (outcome.robbed) st.dinero -= Math.floor(st.dinero * outcome.robbed);
+    setTimeout(() => {
+      this.isSleeping = false;
+      this.calle?.pickUpCarton();
+      if (this.player.action === 'dormir') {
+        this.player.action = null;
+        this.player.actionTimer = this.player.actionProgress = 0;
+      }
+      window.dispatchEvent(new CustomEvent('toast', { detail: { text: outcome.text, type: outcome.moved || outcome.robbed || outcome.ruined ? 'warn' : 'info' } }));
+    }, 1200);
+    return true;
+  }
+
   /** ¿Está el jugador a menos de `radius` m del cambuche? */
   _nearCambuche(radius) {
     const c = this.cambuche?.position;
@@ -1119,6 +1179,8 @@ export class Game {
     this.roadRage?.reset();
     this.limpieza?.reset();
     this.robo?.reset();
+    this.protest?.reset();
+    this.calle?.reset();
     this.momentos?.reset();
     this.substanceEffects?.end();
     this.psychosis?.clearInduced?.();
@@ -1378,6 +1440,16 @@ export class Game {
       camera: this.cameraRig.camera,
       giveIn: this.robo.awaitingAnswer && this.input.consumePress('KeyE')
     });
+    this.protest?.update(dt, {
+      hour: this.clock.hour,
+      zone: zonaDe(this.world.active, this.player.position.x, this.player.position.z),
+      blocked: this.isSleeping || this._deathPending || this._arrestPending || !!this.photoMode?.active || !!this.traffic?.inPursuit || !!this.limpieza?.active || !!this.robo?.active,
+      allowSpawn: !this._nearCambuche(40),
+      clockSpeed: this.cheats?.velocidad ?? 1,
+      camera: this.cameraRig.camera
+    });
+    this.calle?.update(dt, { blocked: this.isSleeping || this._deathPending || this._arrestPending });
+    if (this.input.consumePress('KeyH')) this.sleepOnCarton();
     this.profiler?.mark('trafico');
     if (this._handleDeath()) return;
 
@@ -1610,6 +1682,7 @@ export class Game {
     this.stationCrowd?.dispose();
     this.busRiders?.dispose();
     this.people?.dispose();
+    this.motoPeople?.dispose();
     this.contactShadows?.dispose();
     this.gpsBeacon?.dispose();
     this.psychosis?.dispose?.();
@@ -1619,6 +1692,10 @@ export class Game {
     this.knockFeedback = null;
     this.limpieza?.dispose?.();
     this.robo?.dispose?.();
+    this.protest?.dispose();
+    this.riotCops?.dispose();
+    this.protesters?.dispose();
+    this.calle?.dispose();
     this.radio?.destroy?.();
   }
 }
