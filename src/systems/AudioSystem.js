@@ -73,6 +73,8 @@ export class AudioSystem {
       steps: sound('Sounds_of_a_steps.opus', { volume: .65, sprite: STEP_SPRITES, pool: 6 }),
       ambient: sound('city_atmosphere_soun.opus', { volume: .18, loop: true }),
       rain: sound('rain_sound_01.mp3', { volume: .45, loop: true }),
+      roboRastrillo: sound('robo_rastrillo.mp3', { volume: .9, pool: 1 }),
+      roboDisparo: sound('robo_disparo.mp3', { volume: 1, pool: 1 }),
       protestChant: sound('protesta_pueblo_unido.mp3', { volume: .9 }),
       protestSiren: sound('protesta_paro_sirena.mp3', { volume: .8 })
     };
@@ -298,6 +300,31 @@ export class AudioSystem {
     hit.volume(Math.min(1, volume * 2.4), id);
     hit.rate(.94 + Math.random() * .12, id);
     return true;
+  }
+
+  /**
+   * El rastrillar y el disparo del robo, con volumen por distancia (lleno a menos de 10 m, mudo desde 90) y sin apilarse:
+   * mientras uno suena, el mismo no vuelve a arrancar. Devuelve false si no sonó.
+   */
+  playRobo(name, position = null) {
+    const sound = this.sounds[name === 'rastrillo' ? 'roboRastrillo' : name === 'disparo' ? 'roboDisparo' : null];
+    if (!sound || sound.playing()) return false;
+    const listener = this._listenerPosition;
+    const distance = position && listener ? Math.hypot(position.x - listener.x, position.z - listener.z) : 0;
+    const volume = Math.max(0, Math.min(1, (90 - distance) / 80));
+    if (volume <= 0) return false;
+    const id = sound.play();
+    sound.volume(volume * (name === 'disparo' ? 1 : .9), id);
+    return true;
+  }
+
+  /** El choque de dos carros: uno de los golpes grabados, más fuerte y que se oye de más lejos que un puñetazo. */
+  playCarCrash(position = null) {
+    const listener = this._listenerPosition;
+    const distance = position && listener ? Math.hypot(position.x - listener.x, position.z - listener.z) : 0;
+    const volume = Math.max(0, Math.min(1, (70 - distance) / 60));
+    if (volume <= 0 || !this._fx()) return false;
+    return this._playCarHit(volume * .7);
   }
 
   _knockVolume(position) {
